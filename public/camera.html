@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <title>Camera - Security System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+
+<body class="container mt-4">
+    <h1 class="text-center">Camera Mode</h1>
+    <label for="cameraId" class="form-label">Masukkan ID Kamera:</label>
+    <input type="text" id="cameraId" class="form-control mb-3" placeholder="Contoh: Camera-1">
+    <button class="btn btn-primary" onclick="startCamera()">Mulai Kamera</button>
+
+    <video id="camera" class="mt-3 w-100 border" autoplay></video>
+
+    <script>
+        let mediaRecorder;
+        let recordedChunks = [];
+        let cameraId;
+        const ws = new WebSocket("ws://localhost:3000");
+
+        function startCamera() {
+            cameraId = document.getElementById("cameraId").value.trim();
+            if (!cameraId) return alert("Masukkan ID Kamera terlebih dahulu!");
+
+            navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+                .then(stream => {
+                    document.getElementById("camera").srcObject = stream;
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+
+                    mediaRecorder.ondataavailable = event => {
+                        if (event.data.size > 0) {
+                            recordedChunks.push(event.data);
+                        }
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(recordedChunks, { type: "video/webm" });
+                        recordedChunks = [];
+                        sendVideoToServer(blob);
+                    };
+
+                    detectMotion(stream);
+                })
+                .catch(error => console.error("Error akses kamera:", error));
+        }
+
+        function detectMotion(stream) {
+            const videoTrack = stream.getVideoTracks()[0];
+            const imageCapture = new ImageCapture(videoTrack);
+            let lastFrame = null;
+
+            function checkMotion() {
+                imageCapture.grabFrame().then(bitmap => {
+                    const canvas = document.createElement("canvas");
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                    const ctx = canvas.getContext("2d");
+                    ctx.drawImage(bitmap, 0, 0);
+
+                    if (lastFrame) {
+                        const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        if (isMotionDetected(lastFrame, currentFrame)) {
+                            console.log("⚠️ Gerakan terdeteksi!");
+                            if (mediaRecorder.state === "inactive") {
+                                mediaRecorder.start();
+                            }
+                            setTimeout(() => mediaRecorder.stop(), 5000);
+                        }
+                    }
+                    lastFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    requestAnimationFrame(checkMotion);
+                });
+            }
+            checkMotion();
+        }
+
+        function isMotionDetected(frame1, frame2) {
+            let diffCount = 0;
+            for (let i = 0; i < frame1.data.length; i += 4) {
+                const diff = Math.abs(frame1.data[i] - frame2.data[i]) +
+                    Math.abs(frame1.data[i + 1] - frame2.data[i + 1]) +
+                    Math.abs(frame1.data[i + 2] - frame2.data[i + 2]);
+                if (diff > 50) diffCount++;
+            }
+            return diffCount > 1000;
+        }
+
+        function sendVideoToServer(blob) {
+            const formData = new FormData();
+            formData.append("video", blob, `${cameraId}-${Date.now()}.webm`);
+
+            fetch("/upload", {
+                method: "POST",
+                body: formData
+            }).then(response => console.log("📹 Video dikirim ke server"))
+                .catch(error => console.error("Gagal mengirim video:", error));
+        }
+    </script>
+</body>
+
+</html>
